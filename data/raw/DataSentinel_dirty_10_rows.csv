@@ -1,0 +1,11 @@
+order_id,order_date,customer_name,email,city,product,category,quantity,unit_price,discount_pct,payment_method,status,rating,total_amount
+ORD0001,2026-08-21,Customer 001,customer001@example.com,Jaipur,Laptop,Electronics,1.0,55000.0,10,UPI,Delivered,3.0,49500.0
+ORD0002,2026-09-15,Customer 002,customer002@example.com,Delhi,Mouse,Accessories,3.0,650.0,0,Card,Shipped,4.0,1950.0
+ORD0003,2026-01-29,,customer003@example.com,Mumbai,Keyboard,Accessories,2.0,1200.0,10,Cash,Pending,5.0,2160.0
+ORD0004,2026-08-17,Customer 004,customer004@example.com,Pune,Monitor,Electronics,4.0,12000.0,10,Net Banking,Delivered,4.0,43200.0
+ORD0005,2026-02-08,Customer 005,customer005@example.com, jaipur ,Headphones,Accessories,3.0,2500.0,15,UPI,Shipped,3.0,6375.0
+ORD0006,2026-04-22,Customer 006,,Jaipur,Laptop,Electronics,3.0,55000.0,0,Card,Pending,5.0,165000.0
+ORD0007,2026-07-13,Customer 007,customer007@example.com,Delhi,Mouse,Accessories,4.0,650.0,5,Cash,Delivered,5.0,2470.0
+ORD0008,2026-05-14,Customer 008,customer008@example.com,Mumbai,Keyboard,Accessories,3.0,1200.0,5,Net Banking,Shipped,2.0,3420.0
+ORD0009,2026-06-16,Customer 009,customer009@example.com,,Monitor,Electronics,1.0,12000.0,15,UPI,Pending,1.0,10200.0
+ORD0010,2026-09-06,Customer 010,customer010@example.com,JAIPUR,Headphones,Accessories,5.0,2500.0,5,Card,Delivered,4.0,11875.0
