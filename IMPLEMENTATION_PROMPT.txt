@@ -1,0 +1,15 @@
+DATA SENTINEL — IMPLEMENTATION / REGRESSION PROMPT
+
+Review the current DataSentinel codebase before making changes. Preserve the existing UI, theme, maps, analytics charts, upload history, authentication, database, and all working functionality. Do not redesign or remove existing features.
+
+Required behavior:
+1. Total Uploads must increase once for every successful explicit upload event, including uploading the exact same file again. A Streamlit rerun for the same upload event must not create another history row. Unique Datasets must count distinct dataset identities separately from upload events.
+2. Upload History must retain one timestamped row per successful upload event. Failed uploads must not be counted.
+3. Column Health must show each column's null percentage and severity both before and after cleaning.
+4. Infer date-like string columns as datetime for profiling/reporting, without silently changing the underlying dataset values.
+5. Calculate a transparent, continuous data-quality score from documented checks; missing cells must reduce the score. Do not report 100% when required checks find issues. Show the scoring method in the UI/help text.
+6. Detect statistical outliers using robust IQR fences as well as configurable Z-score thresholds. Also flag exact duplicate rows and repeated identifier values (id and *_id columns). Avoid treating every repeated non-key categorical value as an anomaly.
+7. Keep anomaly results compatible with the existing dashboard table and analytics/history schema.
+8. Add or update automated tests for repeat upload events, same-file re-upload, failed upload, null-rate before/after, date inference, duplicate IDs/rows, IQR outliers, and score calculation.
+
+Before delivering: run Python compilation, unit/smoke tests, and a full local Streamlit run if the environment supports it. Report exactly which tests passed and any tests that could not be run. Never claim a browser or deployment test was completed unless it actually was.

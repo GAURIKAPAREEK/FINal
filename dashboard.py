@@ -1,0 +1,339 @@
+import os
+import sys
+
+import pandas as pd
+import streamlit as st
+
+sys.path.append(os.path.dirname(__file__))
+
+_FAVICON = os.path.join(os.path.dirname(__file__), "assets", "brand", "favicon.png")
+
+from src.anomaly_detector import detect_statistical_anomalies
+from src.auth import get_authenticator
+from src.azure_sql import save_pipeline_run
+from src.cleaning import count_null_cells, fill_missing_values, save_clean_data, standardize_data, verify_clean_data
+from src.ui.chart import render_quality_trend_charts
+from src.ingestion import load_config, load_file
+from src.paths import resolve_path
+from src.profiler import profile_dataframe
+from src.quality_trend import get_quality_trend
+from src.quarantine import quarantine_bad_rows, save_quarantine
+from src.schema_drift import detect_schema_drift, save_schema_snapshot
+from src.dashboard_ui import (
+    dashboard_hero,
+    empty_state,
+    how_it_works,
+    page_footer,
+    page_intro,
+    panel_start,
+    quarantine_panel,
+    section,
+    stat_grid,
+    themed_table,
+    upload_zone,
+)
+from src.app_shell import init_theme, inject_css, render_app_header
+from src.auth_ui import render_auth_page
+from src.validator import apply_validation_rules
+
+st.set_page_config(
+    page_title="DataSentinel",
+    page_icon=_FAVICON if os.path.exists(_FAVICON) else "🔷",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+authenticator, _auth_config = get_authenticator()
+init_theme("dark")
+
+# ══════════════════════════════════════════════════════════════════
+# AUTH
+# ══════════════════════════════════════════════════════════════════
+if not st.session_state.get("authentication_status"):
+    try:
+        authenticator.login(location='unrendered')
+    except Exception:
+        pass
+
+if st.session_state.get("authentication_status") is not True:
+    inject_css(login=True)
+    if "auth_page" not in st.session_state:
+        st.session_state["auth_page"] = "login"
+    render_auth_page()
+    st.stop()
+
+# ══════════════════════════════════════════════════════════════════
+# APP SHELL
+# ══════════════════════════════════════════════════════════════════
+inject_css(login=False)
+
+if "app_page" not in st.session_state:
+    st.session_state["app_page"] = "dashboard"
+
+current_user = st.session_state.get("username", "")
+user_name = st.session_state.get("name", current_user)
+user_email = st.session_state.get("email", "")
+if not user_email and current_user:
+    user_email = _auth_config.get("credentials", {}).get("usernames", {}).get(current_user, {}).get("email", "")
+    st.session_state["email"] = user_email
+app_page = st.session_state.get("app_page", "dashboard")
+
+# Paint shell first so Streamlit can replace the login DOM before Azure I/O
+render_app_header(user_name, current_user, user_email, "main_theme", "main_logout")
+
+if not st.session_state.get("_workspace_hydrated"):
+    st.markdown(
+        '<div class="ui-boot-panel" role="status">'
+        '<div class="ui-boot-card"><p>Loading workspace…</p></div>'
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    st.session_state["_workspace_hydrated"] = True
+    st.rerun()
+
+config = load_config("config/pipeline_config.yaml")
+
+trend_df = get_quality_trend(config, current_user)
+has_history = not trend_df.empty
+
+
+def _mark_upload_event():
+    """Give each explicit file selection its own event ID (reruns keep the ID)."""
+    st.session_state["_upload_event_id"] = st.session_state.get("_upload_event_id", 0) + 1
+
+
+def _run_pipeline(uploaded_file):
+    temp_path = resolve_path(os.path.join("data", "raw", uploaded_file.name))
+    os.makedirs(os.path.dirname(temp_path), exist_ok=True)
+    with open(temp_path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
+    st.success(f"Uploaded **{uploaded_file.name}**")
+
+    try:
+        with st.spinner("Running validation pipeline…"):
+            df, metadata = load_file(temp_path)
+            df = standardize_data(df)
+            profile = profile_dataframe(df, config)
+            violations, summary = apply_validation_rules(df, config)
+            clean_df, quarantined_df = quarantine_bad_rows(df, violations, config)
+            clean_df = fill_missing_values(clean_df)
+            row_pass_rate = (len(clean_df) / len(df) * 100.0) if len(df) > 0 else 100.0
+            profile["overall_quality_score"] = round(min(profile["overall_quality_score"], row_pass_rate), 1)
+            clean_report = verify_clean_data(clean_df, config)
+            save_quarantine(quarantined_df, config, uploaded_file.name)
+            save_clean_data(clean_df, config, uploaded_file.name)
+            anomalies = detect_statistical_anomalies(df, profile, config)
+            df_dtypes = {col: str(df[col].dtype) for col in df.columns}
+            drift_result = detect_schema_drift(
+                list(df.columns), df_dtypes, uploaded_file.name, current_user
+            )
+            save_schema_snapshot(
+                list(df.columns), df_dtypes, config, uploaded_file.name, current_user
+            )
+            # One DB history row per successful upload selection. Streamlit reruns
+            # reuse the same event ID, while selecting the same file again creates a new one.
+            event_id = st.session_state.get("_upload_event_id", 0)
+            run_key = f"{current_user}:{event_id}"
+            if st.session_state.get("_last_saved_run") != run_key:
+                save_pipeline_run(
+                    metadata=metadata,
+                    profile=profile,
+                    validation_summary=summary,
+                    anomalies=anomalies,
+                    drift_result=drift_result,
+                    config=config,
+                    username=current_user,
+                )
+                st.session_state["_last_saved_run"] = run_key
+                st.session_state["_refresh_after_save"] = True
+    except Exception as exc:
+        st.error(f"Pipeline failed: {exc}")
+        return
+
+    # Nayi upload save hui hai -> ek baar rerun taaki upar ke counts turant update ho
+    if st.session_state.pop("_refresh_after_save", False):
+        st.rerun()
+
+    section("Validation results", f"Quality score: {profile['overall_quality_score']}%")
+    stat_grid([
+        ("Quality score", f"{profile['overall_quality_score']}%", "Overall health"),
+        ("Clean rows", clean_report["rows"], "Passed validation"),
+        ("Quarantined", len(quarantined_df), "Failed rules"),
+        ("Null cells", clean_report["null_cells"], "In clean output"),
+    ])
+
+    if clean_report["is_fully_clean"]:
+        st.success("Dataset verified — no nulls in required columns.")
+    else:
+        st.warning(f"{clean_report['null_cells']} null cells remain in clean output.")
+
+    section("Column health", "Null rates and status for every column")
+    clean_profiles = profile_dataframe(clean_df, config)["column_profiles"]
+    col_df = pd.DataFrame([
+        {
+            "Column": col,
+            "Type": d["data_type"],
+            "Null % Before": f"{round(d['null_percentage'] * 100, 1)}%",
+            "Null % After": f"{round(clean_profiles.get(col, {}).get('null_percentage', 0) * 100, 1)}%",
+            "Status Before": d["severity"],
+            "Status After": clean_profiles.get(col, {}).get("severity", "—"),
+        }
+        for col, d in profile["column_profiles"].items()
+    ])
+    themed_table(col_df, max_rows=50)
+
+    section("Cleaning summary")
+    before_nulls = count_null_cells(df, config, required_only=True)
+    stat_grid([
+        ("Input rows", len(df), "Original dataset"),
+        ("Nulls before", before_nulls, "Required columns"),
+        ("Nulls after", clean_report["null_cells"], "After cleaning"),
+        ("Removed", len(quarantined_df), "Quarantined rows"),
+    ])
+
+    if anomalies:
+        section("Anomalies detected")
+        themed_table(pd.DataFrame(anomalies)[["column", "value", "z_score", "column_mean"]], max_rows=50)
+
+    # Always show quarantine after a run (empty state if none)
+    quarantine_panel(config, live_df=quarantined_df)
+
+    if drift_result.get("drift_detected"):
+        st.warning("Schema drift detected since last upload.")
+        if drift_result.get("added_columns"):
+            st.write("Added:", drift_result["added_columns"])
+        if drift_result.get("removed_columns"):
+            st.write("Removed:", drift_result["removed_columns"])
+
+    st.download_button(
+        "Download clean CSV",
+        clean_df.to_csv(index=False).encode("utf-8"),
+        file_name=f"clean_{uploaded_file.name}",
+        mime="text/csv",
+        use_container_width=True,
+        type="primary",
+    )
+
+
+def render_dashboard_page() -> None:
+    # Top section: Upload dataset (Left) and Hero Command Center (Right) side-by-side
+    upload_col, hero_col = st.columns([1, 1], gap="large")
+
+    with upload_col:
+        panel_start()
+        uploaded_file = st.file_uploader(
+            "Upload",
+            type=["csv", "json", "xlsx"],
+            label_visibility="collapsed",
+            key="main_uploader",
+            on_change=_mark_upload_event,
+        )
+
+    with hero_col:
+        dashboard_hero(has_data=has_history)
+
+    # How it works is only shown when idle
+    if uploaded_file is None:
+        how_it_works()
+
+    # Metrics grid
+    if has_history:
+        stat_grid([
+            ("Total uploads", len(trend_df), "Total uploads"),
+            ("Avg quality", f"{trend_df['quality_score'].mean():.1f}%", "Across all uploads"),
+            ("Unique datasets", trend_df["file_name"].nunique(), " Distinct files"),
+            ("Anomalies", int(trend_df["anomalies_found"].sum()), "Detected total"),
+        ])
+    else:
+        stat_grid([
+            ("Total uploads", "0", "Upload to begin"),
+            ("Avg quality", "—", "No data yet"),
+            ("Unique datasets", "0", "Distinct files"),
+            ("Anomalies", "0", "Detected"),
+        ])
+
+    # Idle dashboard quarantine panel (shows blank/empty state if no active validation run)
+    if uploaded_file is None:
+        quarantine_panel(config)
+
+    if uploaded_file is not None:
+        _run_pipeline(uploaded_file)
+
+
+def _time_ago(ts) -> str:
+    if pd.isna(ts):
+        return "—"
+    secs = int((pd.Timestamp.now() - ts).total_seconds())
+    if secs < 60:
+        return "just now"
+    if secs < 3600:
+        return f"{secs // 60} min ago"
+    if secs < 86400:
+        return f"{secs // 3600} hr ago"
+    return f"{secs // 86400} day ago" if secs // 86400 == 1 else f"{secs // 86400} days ago"
+
+
+def _upload_history_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Is account ki uploads: file name, kab upload hui (date + time), kitna pehle."""
+    d = df.sort_values("run_timestamp", ascending=False)
+    ts = pd.to_datetime(d["run_timestamp"], errors="coerce")
+    out = pd.DataFrame({
+        "File name": d["file_name"].values,
+        "Uploaded on": ts.dt.strftime("%d %b %Y").values,
+        "Time": ts.dt.strftime("%I:%M %p").values,
+        "Age": [_time_ago(t) for t in ts],
+    })
+    if "row_count" in d.columns:
+        out["Rows"] = d["row_count"].values
+    if "column_count" in d.columns:
+        out["Columns"] = d["column_count"].values
+    out["Quality"] = d["quality_score"].map(lambda x: "—" if pd.isna(x) else f"{x:.0f}%").values
+    return out
+
+
+def render_analytics_page() -> None:
+    page_intro("Analytics", "Quality trends across previous datasets and runs.")
+    if not has_history:
+        empty_state("No analytics yet", "Upload a dataset from Dashboard to build your first trend charts.")
+        return
+
+    try:
+        selected = st.selectbox(
+            "Filter by dataset",
+            ["All datasets"] + sorted(trend_df["file_name"].unique()),
+            key="analytics_dataset_filter",
+        )
+        chart_df = trend_df if selected == "All datasets" else trend_df[trend_df["file_name"] == selected]
+        threshold = config.get("quality", {}).get("min_quality_score", 70)
+        render_quality_trend_charts(chart_df, threshold=threshold, key_prefix="analytics_trend")
+    except Exception as exc:
+        st.warning(f"Could not load analytics: {exc}")
+
+    section("Recent uploads", "Is account ki latest uploaded files")
+    themed_table(_upload_history_df(trend_df), max_rows=10)
+
+
+def render_history_page() -> None:
+    page_intro("History", "Full pipeline run history for your workspace.")
+    if not has_history:
+        empty_state("No history yet", "Runs will appear here after you upload and validate a dataset.")
+        return
+
+    selected = st.selectbox(
+        "Filter by dataset",
+        ["All datasets"] + sorted(trend_df["file_name"].unique()),
+        key="history_dataset_filter",
+    )
+    history_df = trend_df if selected == "All datasets" else trend_df[trend_df["file_name"] == selected]
+    section("Upload history", f"Is account ne ab tak {len(trend_df)} uploads kiye hain")
+    themed_table(_upload_history_df(history_df), max_rows=200)
+
+
+if app_page == "analytics":
+    render_analytics_page()
+elif app_page == "history":
+    render_history_page()
+else:
+    render_dashboard_page()
+
+page_footer()

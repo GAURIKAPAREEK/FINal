@@ -1,0 +1,37 @@
+{
+  "username": "gaurikaaz_12",
+  "source_filename": "DataSentinel_dirty_10_rows.csv",
+  "columns": [
+    "order_id",
+    "order_date",
+    "customer_name",
+    "email",
+    "city",
+    "product",
+    "category",
+    "quantity",
+    "unit_price",
+    "discount_pct",
+    "payment_method",
+    "status",
+    "rating",
+    "total_amount"
+  ],
+  "dtypes": {
+    "order_id": "str",
+    "order_date": "str",
+    "customer_name": "str",
+    "email": "str",
+    "city": "str",
+    "product": "str",
+    "category": "str",
+    "quantity": "float64",
+    "unit_price": "float64",
+    "discount_pct": "int64",
+    "payment_method": "str",
+    "status": "str",
+    "rating": "float64",
+    "total_amount": "float64"
+  },
+  "saved_at": "2026-11-19 23:06:57.194851"
+}
